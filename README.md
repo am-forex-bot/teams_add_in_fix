@@ -29,9 +29,10 @@ nothing — the add-in just stops breaking.
 | File | Purpose |
 |---|---|
 | `Deploy-TeamsAddinFix.ps1` | One-shot, per-machine install: copies files to `C:\ProgramData\TeamsAddinFix`, locks down ACLs, registers a hidden logon scheduled task, kicks off a first run |
-| `Fix-TeamsMeetingAddin.ps1` | The actual fix (v6) — what runs at each logon |
+| `Fix-TeamsMeetingAddin.ps1` | The actual fix (v7) — what runs at each logon |
 | `RunHiddenTeamsAddInFix.vbs` | Wrapper that launches PowerShell with zero window flash |
 | `FixTeamsAddin_Manual.bat` | Helpdesk convenience: double-click to run the fix immediately for the current user (also usable as a GPO user logon script) |
+| `Install-TeamsAddinMsi.ps1` | Laptop provisioning: installs the add-in MSI machine-wide into Program Files so it works for **every** user (see "Setting up a new laptop" below) |
 | `Uninstall-TeamsAddinFix.ps1` | Removes the task and files (handy while testing) |
 
 ## Old fix vs. new fix
@@ -48,10 +49,14 @@ nothing — the add-in just stops breaking.
 
 At each logon, `Fix-TeamsMeetingAddin.ps1`:
 
-1. Finds the newest installed add-in version under
-   `%LOCALAPPDATA%\Microsoft\TeamsMeetingAddin` **or** `...\TeamsMeetingAdd-in`
-   (both spellings exist in the wild).
-2. Detects Office bitness (x86/x64) from the Click-to-Run registry config.
+1. Detects Office bitness (x86/x64) from the Click-to-Run registry config.
+2. Scans every place the add-in can live — per-user
+   (`%LOCALAPPDATA%\Microsoft\TeamsMeetingAddin` and `...\TeamsMeetingAdd-in`,
+   both spellings exist in the wild) **and** machine-wide
+   (`%ProgramFiles(x86)%\Microsoft\TeamsMeetingAdd-in` and `%ProgramFiles%\...`)
+   — and picks the **newest version folder that actually contains the loader
+   DLL**, so a gutted newest folder falls through to the next-best copy
+   instead of aborting.
 3. Silently re-registers `Microsoft.Teams.AddinLoader.dll` per-user
    (`regsvr32 /s /n /i:user`) — the same repair Microsoft documents for the
    add-in not appearing in Outlook.
@@ -83,6 +88,36 @@ At each logon, `Fix-TeamsMeetingAddin.ps1`:
    modify the files; users can only read/execute.
 6. Log folder renamed from `%LOCALAPPDATA%\Company` to
    `%LOCALAPPDATA%\TeamsAddinFix`.
+
+## Setting up a new laptop (and the admin-install trap)
+
+Historically, installing the add-in MSI while logged in as the setup admin —
+even with "install for all users" / `ALLUSERS=1` — dropped the **files** into
+the *admin's own profile* (`C:\Users\<admin>\AppData\Local\...`). `ALLUSERS`
+only controls where the registration goes, not where the payload lands. Other
+users can't read another profile, so the add-in never loaded for the laptop's
+actual user. That trap is why the old reactive fix had to pass the username
+around and reinstall into that specific user's profile.
+
+The supported flow now, as the setup admin (no user logon needed first):
+
+```bat
+:: 1. Install the add-in machine-wide (forces TARGETDIR into Program Files,
+::    named after the MSI's own product version, readable by everyone)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\TeamsAddinFix\Install-TeamsAddinMsi.ps1 -MsiPath .\MicrosoftTeamsMeetingAddinInstaller.msi
+
+:: 2. Deploy the preventive fix (hidden logon task)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\TeamsAddinFix\Deploy-TeamsAddinFix.ps1
+```
+
+Then hand the laptop over. At the user's first logon the task registers the
+add-in for *them* against the machine-wide copy — no per-user install, no
+restart ritual, nothing for the user to click. Every later logon re-asserts
+it, and when Teams starts laying down newer per-user versions through its own
+updates, the fix automatically follows the newest usable copy wherever it is.
+
+(The MSI lives in `NEW TEAMS FIX MAYBE MAR2025.zip` in this repo; extract it
+next to the script or point `-MsiPath` at it.)
 
 ## Verifying on a device
 
@@ -117,6 +152,7 @@ place (removing them would re-break Outlook).
   yours flags it, change the task action in `Deploy-TeamsAddinFix.ps1` to run
   `powershell.exe -WindowStyle Hidden ...` directly — the only cost is a brief
   console flash at logon.
-- If a machine's add-in install is genuinely corrupt (loader DLL missing — see
-  "ERROR: Loader DLL missing" in the log), that machine still needs the old
-  MSI reinstall once; the preventive fix keeps it healthy afterwards.
+- If a machine has **no** usable copy of the add-in anywhere (log shows
+  "ERROR: No add-in version folder containing ... found"), run
+  `Install-TeamsAddinMsi.ps1` on it once; the preventive fix keeps it healthy
+  from then on.
