@@ -34,6 +34,9 @@ nothing — the add-in just stops breaking.
 | `FixTeamsAddin_Manual.bat` | Helpdesk convenience: double-click to run the fix immediately for the current user (also usable as a GPO user logon script) |
 | `Install-TeamsAddinMsi.ps1` | Laptop provisioning: installs the add-in MSI machine-wide into Program Files so it works for **every** user (see "Setting up a new laptop" below) |
 | `Uninstall-TeamsAddinFix.ps1` | Removes the task and files (handy while testing) |
+| `Fix-TeamsMeetingAddin.cmd` | **PowerShell-free** version of the fix, for endpoints where PowerShell is blocked by EDR |
+| `Install-TeamsAddinFix.cmd` | **PowerShell-free** installer (cmd + `schtasks` + `icacls`) — the no-PowerShell equivalent of `Deploy-TeamsAddinFix.ps1` |
+| `Uninstall-TeamsAddinFix.cmd` | PowerShell-free removal |
 
 ## Old fix vs. new fix
 
@@ -118,6 +121,42 @@ updates, the fix automatically follows the newest usable copy wherever it is.
 
 (The MSI lives in `NEW TEAMS FIX MAYBE MAR2025.zip` in this repo; extract it
 next to the script or point `-MsiPath` at it.)
+
+## PowerShell-free deployment (EDR-locked endpoints, e.g. Aurora)
+
+If PowerShell is blocked on your endpoints, use the `.cmd` toolchain instead —
+it does the same job with only `cmd`, `schtasks`, `reg`, `regsvr32` and
+`icacls` (all native Windows binaries), and never invokes PowerShell.
+
+Put these three files in one folder (ideally your EDR-excluded folder):
+
+- `Install-TeamsAddinFix.cmd`
+- `Fix-TeamsMeetingAddin.cmd`
+- `RunHiddenTeamsAddInFix.vbs`
+
+Then, from an **elevated** command prompt:
+
+```bat
+:: install to your EDR-excluded folder so the logon task runs from an allowed path
+Install-TeamsAddinFix.cmd "C:\YourExcludedFolder\TeamsAddinFix"
+```
+
+This copies the files in, tightens the ACLs, registers a hidden `schtasks`
+logon task that runs in each user's own context, and fixes the current user
+immediately. Remove it with `Uninstall-TeamsAddinFix.cmd "C:\YourExcludedFolder\TeamsAddinFix"`.
+
+If `wscript` is also blocked (so the hidden launcher never fires and the log
+stays empty after logon), re-run with `visible` as the second argument —
+the task then runs `cmd` directly, at the cost of a brief console flash at
+logon:
+
+```bat
+Install-TeamsAddinFix.cmd "C:\YourExcludedFolder\TeamsAddinFix" visible
+```
+
+Note: the scheduled task uses the `BUILTIN\Users` group principal at limited
+run level, so it runs for every user at their logon with no stored password
+and no admin rights at runtime — same security model as the PowerShell version.
 
 ## Verifying on a device
 
